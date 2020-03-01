@@ -54,12 +54,10 @@ namespace HoloToolkit.Unity.InputModule
         public CursorStateEnum CursorState { get { return cursorState; } }
         private CursorStateEnum cursorState = CursorStateEnum.None;
 
-#pragma warning disable 0649
         [Tooltip("Set this in the editor to an object with a component that implements IPointerSource to tell this"
             + " cursor which pointer to follow. To set the pointer programmatically, set Pointer directly.")]
         [SerializeField]
-        private GameObject loadPointer;
-#pragma warning restore 0649
+        protected GameObject loadPointer;
 
         /// <summary>
         /// The pointer that this cursor should follow and process input from.
@@ -85,10 +83,13 @@ namespace HoloToolkit.Unity.InputModule
         [Tooltip("The distance from the hit surface to place the cursor")]
         public float SurfaceCursorDistance = 0.02f;
 
+        [Header("Motion")]
+        [Tooltip("When lerping, use unscaled time. This is useful for games that have a pause mechanism or otherwise adjust the game timescale.")]
+        public bool UseUnscaledTime = true;
+
         /// <summary>
         /// Blend value for surface normal to user facing lerp
         /// </summary>
-        [Header("Motion")]
         public float PositionLerpTime = 0.01f;
 
         /// <summary>
@@ -187,7 +188,14 @@ namespace HoloToolkit.Unity.InputModule
         /// <summary>
         /// Override for enable functions
         /// </summary>
-        protected virtual void OnEnable() { }
+        protected virtual void OnEnable()
+        {
+            if (FocusManager.IsInitialized && Pointer != null)
+            {
+                OnPointerSpecificFocusChanged(Pointer, null, FocusManager.Instance.GetFocusedObject(Pointer));
+            }
+            OnCursorStateChange(CursorStateEnum.None);
+        }
 
         /// <summary>
         /// Override for disable functions
@@ -197,6 +205,8 @@ namespace HoloToolkit.Unity.InputModule
             TargetedObject = null;
             TargetedCursorModifier = null;
             visibleHandsCount = 0;
+            IsHandVisible = false;
+            OnCursorStateChange(CursorStateEnum.Contextual);
         }
 
         private void OnDestroy()
@@ -235,14 +245,14 @@ namespace HoloToolkit.Unity.InputModule
         /// </summary>
         protected virtual void UnregisterManagers()
         {
-            if (InputManager.Instance != null)
+            if (InputManager.IsInitialized)
             {
-                InputManager.Instance.RemoveGlobalListener(gameObject);
                 InputManager.Instance.InputEnabled -= OnInputEnabled;
                 InputManager.Instance.InputDisabled -= OnInputDisabled;
+                InputManager.Instance.RemoveGlobalListener(gameObject);
             }
 
-            if (FocusManager.Instance != null)
+            if (FocusManager.IsInitialized)
             {
                 FocusManager.Instance.PointerSpecificFocusChanged -= OnPointerSpecificFocusChanged;
             }
@@ -254,6 +264,7 @@ namespace HoloToolkit.Unity.InputModule
             {
                 // Nothing to do. Keep the pointer that must have been set programmatically.
             }
+
             else if (loadPointer != null)
             {
                 Pointer = loadPointer.GetComponent<IPointingSource>();
@@ -266,16 +277,14 @@ namespace HoloToolkit.Unity.InputModule
                         );
                 }
             }
-            else if (FocusManager.Instance != null)
+            else if (FocusManager.IsInitialized)
             {
                 // For backward-compatibility, if a pointer wasn't specified, but there's exactly one
                 // pointer currently registered with FocusManager, we use it.
-
-                Pointer = FocusManager.Instance.TryGetSinglePointer();
-
-                if (Pointer == null)
+                IPointingSource pointingSource;
+                if (FocusManager.Instance.TryGetSinglePointer(out pointingSource))
                 {
-                    Pointer = GazeManager.Instance;
+                    Pointer = pointingSource;
                 }
             }
             else
@@ -296,10 +305,12 @@ namespace HoloToolkit.Unity.InputModule
             if (pointer == Pointer)
             {
                 TargetedObject = newFocusedObject;
-                if (newFocusedObject != null)
-                {
-                    OnActiveModifier(newFocusedObject.GetComponent<CursorModifier>());
-                }
+
+                CursorModifier newModifier = (newFocusedObject == null)
+                    ? null
+                    : newFocusedObject.GetComponent<CursorModifier>();
+
+                OnActiveModifier(newModifier);
             }
         }
 
@@ -317,7 +328,14 @@ namespace HoloToolkit.Unity.InputModule
         /// </summary>
         protected virtual void UpdateCursorTransform()
         {
+            if (Pointer == null)
+            {
+                Debug.Log("No pointer");
+                return;
+            }
+                
             FocusDetails focusDetails = FocusManager.Instance.GetFocusDetails(Pointer);
+            GameObject newTargetedObject = focusDetails.Object;
 
             // Get the forward vector looking back along the pointing ray.
             Vector3 lookForward = -Pointer.Ray.direction;
@@ -326,16 +344,17 @@ namespace HoloToolkit.Unity.InputModule
             targetScale = Vector3.one;
 
             // If no game object is hit, put the cursor at the default distance
-            if (TargetedObject == null)
+            if (newTargetedObject == null)
             {
                 this.TargetedObject = null;
+                this.TargetedCursorModifier = null;
                 targetPosition = Pointer.Ray.origin + Pointer.Ray.direction * DefaultCursorDistance;
                 targetRotation = lookForward.magnitude > 0 ? Quaternion.LookRotation(lookForward, Vector3.up) : transform.rotation;
             }
             else
             {
                 // Update currently targeted object
-                this.TargetedObject = focusDetails.Object;
+                TargetedObject = newTargetedObject;
 
                 if (TargetedCursorModifier != null)
                 {
@@ -349,16 +368,20 @@ namespace HoloToolkit.Unity.InputModule
                 }
             }
 
+            float deltaTime = UseUnscaledTime
+                ? Time.unscaledDeltaTime
+                : Time.deltaTime;
+
             // Use the lerp times to blend the position to the target position
-            transform.position = Vector3.Lerp(transform.position, targetPosition, Time.deltaTime / PositionLerpTime);
-            transform.localScale = Vector3.Lerp(transform.localScale, targetScale, Time.deltaTime / ScaleLerpTime);
-            transform.rotation = Quaternion.Lerp(transform.rotation, targetRotation, Time.deltaTime / RotationLerpTime);
+            transform.position = Vector3.Lerp(transform.position, targetPosition, deltaTime / PositionLerpTime);
+            transform.localScale = Vector3.Lerp(transform.localScale, targetScale, deltaTime / ScaleLerpTime);
+            transform.rotation = Quaternion.Lerp(transform.rotation, targetRotation, deltaTime / RotationLerpTime);
         }
 
         /// <summary>
         /// Updates the visual representation of the cursor.
         /// </summary>
-        public void SetVisiblity(bool visible)
+        public virtual void SetVisiblity(bool visible)
         {
             if (PrimaryCursorVisual != null)
             {
@@ -426,7 +449,7 @@ namespace HoloToolkit.Unity.InputModule
         /// <param name="eventData"></param>
         public virtual void OnSourceDetected(SourceStateEventData eventData)
         {
-            if (Pointer.OwnsInput(eventData))
+            if (Pointer != null && Pointer.OwnsInput(eventData))
             {
                 visibleHandsCount++;
                 IsHandVisible = true;
@@ -446,6 +469,7 @@ namespace HoloToolkit.Unity.InputModule
                 if (visibleHandsCount == 0)
                 {
                     IsHandVisible = false;
+                    IsInputSourceDown = false;
                 }
             }
         }

@@ -4,7 +4,9 @@
 using UnityEngine;
 using UnityEngine.Networking;
 using HoloToolkit.Unity.InputModule;
-using UnityEngine.VR.WSA.Input;
+using System.Collections.Generic;
+using HoloToolkit.Unity;
+using UnityEngine.XR.WSA.Input;
 
 namespace HoloToolkit.Examples.SharingWithUNET
 {
@@ -22,6 +24,8 @@ namespace HoloToolkit.Examples.SharingWithUNET
                 return _Instance;
             }
         }
+
+        public static List<PlayerController> allPlayers = new List<PlayerController>();
 
         /// <summary>
         /// The transform of the shared world anchor.
@@ -79,6 +83,17 @@ namespace HoloToolkit.Examples.SharingWithUNET
             }
         }
 
+        [Command]
+        private void CmdSetAnchorOwnerIP(string UpdatedIP)
+        {
+            anchorManager.UpdateAnchorOwnerIP(UpdatedIP);
+        }
+
+        public void SetAnchorOwnerIP(string UpdatedIP)
+        {
+            CmdSetAnchorOwnerIP(UpdatedIP);
+        }
+
         [SyncVar(hook = "PlayerNameChanged")]
         string PlayerName;
 
@@ -104,7 +119,7 @@ namespace HoloToolkit.Examples.SharingWithUNET
 
 #pragma warning disable 0414
         [SyncVar(hook = "PlayerIpChanged")]
-        string PlayerIp;
+        public string PlayerIp;
 #pragma warning restore 0414
         [Command]
         private void CmdSetPlayerIp(string playerIp)
@@ -134,7 +149,7 @@ namespace HoloToolkit.Examples.SharingWithUNET
             if (isLocalPlayer)
             {
                 levelState.SetPathIndex(PathIndex);
-                if (PathIndex == -1 && UnityEngine.VR.WSA.HolographicSettings.IsDisplayOpaque)
+                if (PathIndex == -1 && UnityEngine.XR.WSA.HolographicSettings.IsDisplayOpaque)
                 {
                     Debug.Log("Getting in line");
                     WaitingForFreePath = true;
@@ -146,8 +161,8 @@ namespace HoloToolkit.Examples.SharingWithUNET
                                 MixedRealityTeleport warper = MixedRealityTeleport.Instance;
                                 if (warper != null)
                                 {
-                                    warper.ResetRotation();
-                                    warper.SetWorldPostion(levelState.transform.position + levelState.transform.forward * -2.5f + Vector3.up * 0.25f + levelState.transform.transform.right * Random.Range(-2f, 2.0f));
+                                   // warper.ResetRotation();
+                                    warper.SetWorldPosition(levelState.transform.position + levelState.transform.forward * -2.5f + Vector3.up * 0.25f + levelState.transform.transform.right * Random.Range(-2f, 2.0f));
                                 }
                             }, null);
                     }
@@ -219,6 +234,28 @@ namespace HoloToolkit.Examples.SharingWithUNET
             Debug.LogFormat("{0} {1} share", PlayerName, SharesSpatialAnchors ? "does" : "does not");
         }
 
+        public void SetRequireAllPaths(bool require)
+        {
+            CmdSetRequireAllPaths(require);
+        }
+
+        [Command]
+        private void CmdSetRequireAllPaths(bool require)
+        {
+            levelState.SetRequireAllPaths(require);
+        }
+
+        [Command]
+        private void CmdUpdateAnchorName(string UpdatedName)
+        {
+            anchorManager.AnchorName = UpdatedName;
+        }
+
+        public void UpdateAnchorName(string UpdatedName)
+        {
+            CmdUpdateAnchorName(UpdatedName);
+        }
+
         public void SendPathIndex(int RequestedPathIndex)
         {
             CmdSendPathIndex(RequestedPathIndex);
@@ -256,6 +293,7 @@ namespace HoloToolkit.Examples.SharingWithUNET
             }
         }
 
+       
         void Awake()
         {
             cloudMaterial = GetComponentInChildren<MeshRenderer>().material;
@@ -263,6 +301,7 @@ namespace HoloToolkit.Examples.SharingWithUNET
             networkDiscovery = NetworkDiscoveryWithAnchors.Instance;
             anchorManager = UNetAnchorManager.Instance;
             levelState = LevelControl.Instance;
+            allPlayers.Add(this);
         }
 
         private void Start()
@@ -299,7 +338,7 @@ namespace HoloToolkit.Examples.SharingWithUNET
                 Debug.LogFormat("Set local player name {0} ip {1}", networkDiscovery.broadcastData, networkDiscovery.LocalIp);
                 CmdSetPlayerName(networkDiscovery.broadcastData);
                 CmdSetPlayerIp(networkDiscovery.LocalIp);
-                bool opaqueDisplay = UnityEngine.VR.WSA.HolographicSettings.IsDisplayOpaque;
+                bool opaqueDisplay = UnityEngine.XR.WSA.HolographicSettings.IsDisplayOpaque;
                 Debug.LogFormat("local player {0} share anchors ", (opaqueDisplay ? "does not" : "does"));
                 CmdSetCanShareAnchors(!opaqueDisplay);
 
@@ -321,12 +360,65 @@ namespace HoloToolkit.Examples.SharingWithUNET
                                 MixedRealityTeleport warper = MixedRealityTeleport.Instance;
                                 if (warper != null)
                                 {
-                                    warper.ResetRotation();
-                                    warper.SetWorldPostion(levelState.transform.position + levelState.transform.forward * -2.5f + Vector3.up * 0.25f + levelState.transform.transform.right * Random.Range(-2f, 2.0f));
+                                    //warper.ResetRotation();
+                                    warper.SetWorldPosition(levelState.transform.position + levelState.transform.forward * -2.5f + Vector3.up * 0.25f + levelState.transform.transform.right * Random.Range(-2f, 2.0f));
                                 }
                             }, null);
                     }
                 }
+
+                if (!opaqueDisplay && anchorManager.AnchorOwnerIP == "")
+                {
+                    Invoke("DeferredAnchorOwnerCheck", 2.0f);
+                    
+                }
+
+                if (UnityEngine.XR.WSA.HolographicSettings.IsDisplayOpaque)
+                {
+                    InteractionManager.InteractionSourceUpdated += InteractionManager_InteractionSourceUpdated;
+                }
+            }
+        }
+
+        int boltFrame=0;
+        private void InteractionManager_InteractionSourceUpdated(InteractionSourceUpdatedEventArgs obj)
+        {
+            if (obj.state.source.supportsGrasp && obj.state.grasped && (Time.frameCount - boltFrame > 20))
+            {
+                boltFrame = Time.frameCount;
+                Vector3 boltStart;
+                if (!obj.state.sourcePose.TryGetPosition(out boltStart, InteractionSourceNode.Pointer))
+                {
+                    return;
+                }
+
+                
+                Vector3 boltDirection;
+                if (!obj.state.sourcePose.TryGetForward(out boltDirection, InteractionSourceNode.Pointer))
+                {
+                    return;
+                }
+
+                Vector3 boltTarget = boltStart + boltDirection * 15.0f;
+                Transform LevelTransform = levelState.transform;
+
+                boltStart = MixedRealityTeleport.Instance.transform.TransformPoint(boltStart);
+                boltTarget = MixedRealityTeleport.Instance.transform.TransformPoint(boltTarget);
+                CmdSetupBolt(LevelTransform.InverseTransformPoint(boltTarget), LevelTransform.InverseTransformPoint(boltStart));
+            }
+
+            if (obj.state.source.supportsMenu && obj.state.menuPressed)
+            {
+                ResetPosition();
+            }
+        }
+
+        private void DeferredAnchorOwnerCheck()
+        {
+            if (!UnityEngine.XR.WSA.HolographicSettings.IsDisplayOpaque && anchorManager.AnchorOwnerIP == "")
+            {
+                Debug.Log("Claiming anchor ownership " + networkDiscovery.LocalIp);
+                CmdSetAnchorOwnerIP(networkDiscovery.LocalIp);
             }
         }
 
@@ -337,6 +429,11 @@ namespace HoloToolkit.Examples.SharingWithUNET
 
         private void OnDestroy()
         {
+            if (allPlayers.Contains(this))
+            {
+                allPlayers.Remove(this);
+            }
+
             if (levelState != null)
             {
                 levelState.RemoteAvatarReady(this.gameObject, PlayerName, false);
@@ -350,6 +447,13 @@ namespace HoloToolkit.Examples.SharingWithUNET
             if (!isLocalPlayer && PlayerController.Instance != null)
             {
                 PlayerController.Instance.CheckLine();
+            }
+
+            // Anchor owner is disconnecting, find a new anchor.
+            if (UNetAnchorManager.Instance.AnchorOwnerIP == PlayerIp)
+            {
+                Debug.Log("Hey, the anchor owner is going away");
+                anchorManager.AnchorOwnerIP = "";
             }
         }
 
@@ -384,6 +488,7 @@ namespace HoloToolkit.Examples.SharingWithUNET
             if (AnchorEstablished != anchorManager.AnchorEstablished)
             {
                 CmdSendAnchorEstablished(anchorManager.AnchorEstablished);
+                AnchorEstablished = anchorManager.AnchorEstablished;
             }
 
             if (AnchorEstablished == false)
@@ -415,34 +520,54 @@ namespace HoloToolkit.Examples.SharingWithUNET
                 }
             }
 
+            if (!SharesSpatialAnchors)
+            {
+                if (Input.GetButtonUp("XBOX_VIEW"))
+                {
+                    ResetPosition();
+                }
+            }
+
             BoltCheck();
         }
 
-
+        public void ResetPosition()
+        {
+            if (PathIndex >= 0)
+            {
+                levelState.ResetPosition();
+            }
+        }
 
         private void BoltCheck()
         {
             if (isLocalPlayer)
             {
-                InteractionSourceState[] sources = InteractionManager.GetCurrentReading();
+                UnityEngine.XR.WSA.Input.InteractionSourceState[] sources = UnityEngine.XR.WSA.Input.InteractionManager.GetCurrentReading();
                 if (sources != null && sources.Length == 2)
                 {
-                    if (sources[0].source.sourceKind== InteractionSourceKind.Hand && sources[1].source.sourceKind == InteractionSourceKind.Hand)
+                     if (sources[0].source.kind == UnityEngine.XR.WSA.Input.InteractionSourceKind.Hand && sources[1].source.kind == UnityEngine.XR.WSA.Input.InteractionSourceKind.Hand)
                     {
+                       
                         Vector3 p1 = Vector3.zero;
                         Vector3 p2 = Vector3.zero;
+
                         if (sources[0].sourcePose.TryGetPosition(out p1) && sources[1].sourcePose.TryGetPosition(out p2)
                             && p1 != Vector3.zero && p2 != Vector3.zero)
                         {
                             float distBetweenHands = (p1 - p2).magnitude;
-                            if (distBetweenHands < 0.1f)
+                            float targetDist = 0.1f;
+                            
+                            if (distBetweenHands < targetDist)
                             {
                                 Transform LevelTransform = levelState.transform;
                                 if (LevelTransform != null)
                                 {
                                     Vector3 boltStart = (p1 + p2) * 0.5f;
-                                    CmdSetupBolt(LevelTransform.InverseTransformPoint(GazeManager.Instance.HitPosition), LevelTransform.InverseTransformPoint(boltStart));
-                                } 
+                                    Vector3 boltTarget = GazeManager.Instance.HitPosition;
+
+                                    CmdSetupBolt(LevelTransform.InverseTransformPoint(boltTarget), LevelTransform.InverseTransformPoint(boltStart));
+                                }
                             }
                         }
                     }

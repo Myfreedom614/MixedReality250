@@ -19,7 +19,7 @@ public class ScrollingSessionListUIController : SingleInstance<ScrollingSessionL
     // Use this for initialization
     void Start()
     {
-        if (UnityEngine.VR.WSA.HolographicSettings.IsDisplayOpaque == true)
+        if (UnityEngine.XR.WSA.HolographicSettings.IsDisplayOpaque == true)
         {
             gameObject.GetComponent<SimpleTagalong>().TagalongDistance = 1;
         }
@@ -27,6 +27,7 @@ public class ScrollingSessionListUIController : SingleInstance<ScrollingSessionL
         networkDiscovery = NetworkDiscoveryWithAnchors.Instance;
         networkDiscovery.SessionListChanged += NetworkDiscovery_SessionListChanged;
         networkDiscovery.ConnectionStatusChanged += NetworkDiscovery_ConnectionStatusChanged;
+        sessionList = networkDiscovery.remoteSessions;
         ScrollSessions(0);
     }
 

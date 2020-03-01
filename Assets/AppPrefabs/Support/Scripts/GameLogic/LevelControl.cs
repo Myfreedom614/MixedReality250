@@ -242,6 +242,27 @@ public class LevelControl : NetworkBehaviour
         }
     }
 
+    [SyncVar]
+    bool RequireAllPaths = false;
+
+    /// <summary>
+    /// For demos we want to be able to get through the experience quickly, so we will allow 
+    /// fewer paths to be completed.
+    /// </summary>
+    /// <param name="require"></param>
+    public void SetRequireAllPaths(bool require)
+    {
+        RequireAllPaths = require;
+    }
+
+    public bool AllPathsRequired
+    {
+        get
+        {
+            return RequireAllPaths;
+        }
+    }
+
     FadeScript fadeScript;
     /// <summary>
     /// Keeps a mapping from user name to their game objects.
@@ -314,7 +335,7 @@ public class LevelControl : NetworkBehaviour
     {
         if (warper != null)
         {
-            warper.SetWorldPostion(warper.transform.position + (updated - old) + Camera.main.transform.localPosition);
+            warper.SetWorldPosition(warper.transform.position + (updated - old) + Camera.main.transform.localPosition);
         }
     }
 
@@ -453,7 +474,7 @@ public class LevelControl : NetworkBehaviour
 
     void AllowForFewerImmersedPlayers()
     {
-        if (FindOpenPath() != -1)
+        if (RequireAllPaths && FindOpenPath() != -1)
         {
             playerController.CmdRequestPathIndex();
         }
@@ -669,6 +690,10 @@ public class LevelControl : NetworkBehaviour
                     players.Value.ImmersedAvatar.transform.position = remoteGazeOrigin;
                     players.Value.ImmersedAvatar.transform.LookAt(gazeTarget);
                 }
+                else
+                {
+                    Debug.Log("No immersed avatar...");
+                }
 #if LINE_REND
                 Vector3[] points = new Vector3[] { remoteGazeOrigin, gazeTarget };
                 lineRend.SetPositions(points);
@@ -700,11 +725,37 @@ public class LevelControl : NetworkBehaviour
             AvatarStuff[index].GoalLight.SetActive(AtGoal[index]);
         }
 
+        int GoalsCompleted = 0;
+
         // check all of the goals
         for (int index = 0; index < AtGoal.Count; index++)
         {
-            // if a goal hasn't been reached, we can return
             if (AtGoal[index] == false)
+            {
+                // if a goal hasn't been reached, we can return
+                if (RequireAllPaths)
+                {
+                    return;
+                }
+                continue;
+            }
+
+            GoalsCompleted++;
+        }
+
+        if (!RequireAllPaths)
+        {
+            int NumImmersed = 0;
+            foreach(var player in HoloToolkit.Examples.SharingWithUNET.PlayerController.allPlayers)
+            {
+                if (player.SharesSpatialAnchors == false)
+                {
+                    NumImmersed++;
+                }
+            }
+
+            // If not all of the immersed players have completed we can return.
+            if (GoalsCompleted < NumImmersed)
             {
                 return;
             }
@@ -723,6 +774,9 @@ public class LevelControl : NetworkBehaviour
     void ResetLevel()
     {
         Debug.Log("resetting level ilp " + isLocalPlayer);
+
+        RequireAllPaths = false;
+
         for (int index = 0; index < AtGoal.Count; index++)
         {
             AtGoal[index] = false;
@@ -737,7 +791,7 @@ public class LevelControl : NetworkBehaviour
             AvatarStuff[index].GoalLight.SetActive(false);
         }
 
-        if (UnityEngine.VR.WSA.HolographicSettings.IsDisplayOpaque)
+        if (UnityEngine.XR.WSA.HolographicSettings.IsDisplayOpaque)
         {
             playerController.SceneReset();
         }
@@ -785,6 +839,7 @@ public class LevelControl : NetworkBehaviour
             {
                 lpsd.ImmersedAvatar = Instantiate(AvatarStuff[lpsd.PathIndex].Avatar);
                 lpsd.ImmersedAvatar.transform.SetParent(ParentObject.transform, false);
+                ConfigureAvatarsForPathState();
             }
 
             SetRenderersAndColliders(lpsd.FullAvatar, !lpsd.Immersed);
@@ -806,11 +861,14 @@ public class LevelControl : NetworkBehaviour
         // First initialize options to be the same as 'atgoal' which tracks 
         // which paths are complete.
         bool[] options = new bool[AtGoal.Count];
+        
+
         for (int index = 0; index < AtGoal.Count; index++)
         {
             options[index] = AtGoal[index];
         }
 
+        
         // Then we need to check all of the current players to see which paths 
         // people are on.  We will set the options for their path index to be true
         foreach (KeyValuePair<string, LevelPlayerStateData> lpsd in systemIdToPlayerState)
@@ -821,19 +879,39 @@ public class LevelControl : NetworkBehaviour
             }
         }
 
-        // Find the first entry in options that is set to false.
-        for (int index = 0; index < options.Length; index++)
+        if (RequireAllPaths)
         {
-            if (options[index] == false)
+            // Find the first entry in options that is set to false.
+            for (int index = 0; index < options.Length; index++)
             {
-                return index;
+                if (options[index] == false)
+                {
+                    return index;
+                }
             }
         }
-
+        else if(options.Length > 0)
+        {
+            List<int> validOptions = new List<int>();
+            for (int index = 0; index < options.Length; index++)
+            {
+                if (options[index] == false)
+                {
+                    validOptions.Add(index);
+                }
+            }
+            if (validOptions.Count > 0)
+            {
+                int pickedOption = UnityEngine.Random.Range(0, validOptions.Count);
+                return validOptions[pickedOption];
+            }
+        }
         // and if there are no options left return -1 to indicate that the user
         // should remain outside the model.
         return -1;
     }
+
+    private int DeferredPathIndex = -1;
 
     /// <summary>
     /// sets the path index for the local player
@@ -841,7 +919,7 @@ public class LevelControl : NetworkBehaviour
     /// <param name="pathIndex">The path index to set</param>
     public void SetPathIndex(int pathIndex)
     {
-        if (UnityEngine.VR.WSA.HolographicSettings.IsDisplayOpaque && warper != null && fadeScript != null && !fadeScript.Busy && pathIndex != onPathIndex)
+        if (UnityEngine.XR.WSA.HolographicSettings.IsDisplayOpaque && warper != null && fadeScript != null && !fadeScript.Busy && pathIndex != onPathIndex)
         {
             fadeScript.DoFade(1, 1,
                 () =>
@@ -855,22 +933,56 @@ public class LevelControl : NetworkBehaviour
                     UAudioManager.Instance.PlayEvent("Teleport");
 
                   //  warper.AllowTeleport = Immersed;
-                    warper.ResetRotation();
+                  //  warper.ResetRotation();
                     SafetyColliders.SetActive(Immersed);
                     // setup the scene state based on if we are immersed or not.
                     if (Immersed)
                     {
                         transform.localScale = startScale * ImmersiveScale;
-                        warper.SetWorldPostion(currentStartTile.transform.position + Vector3.up * 0.8f * transform.localScale.y);
+                        warper.SetWorldPosition(currentStartTile.transform.position + Vector3.up * 0.8f * transform.localScale.y);
                         VRRoomControl.Instance.DisableControls();
                     }
                     else
                     {
                         transform.localScale = startScale;
-                        warper.ResetRotation();
-                        warper.SetWorldPostion(transform.position + transform.forward * -2.5f + Vector3.up * 0.25f);
+                     //   warper.ResetRotation();
+                        warper.SetWorldPosition(transform.position + transform.forward * -2.5f + Vector3.up * 0.25f);
                         VRRoomControl.Instance.EnableControls();
                     }
+
+                    // and configure the remote players avatars as well.
+                    ConfigureAvatarsForPathState();
+
+                }, null);
+        }
+        else if(fadeScript != null && fadeScript.Busy)
+        {
+            DeferredPathIndex = pathIndex;
+            Debug.Log("Warping later");
+            Invoke("DeferredPosition", 1.0f);
+        }
+    }
+
+    private void DeferredPosition()
+    {
+        Debug.Log("Attempting deferred warp to " + DeferredPathIndex);
+        SetPathIndex(DeferredPathIndex);
+    }
+
+    // If the user gets stuck in the world, this puts them back to the beginning of their path.
+    public void ResetPosition()
+    {
+        if (fadeScript != null && !fadeScript.Busy && onPathIndex >= 0)
+        {
+            fadeScript.DoFade(1, 1,
+                () =>
+                {
+                    SetGoalLights();
+
+                    UAudioManager.Instance.PlayEvent("Teleport");
+                    transform.localScale = startScale * ImmersiveScale;
+                    warper.SetWorldPosition(currentStartTile.transform.position + Vector3.up * 0.8f * transform.localScale.y);
+                    VRRoomControl.Instance.DisableControls();
 
                     // and configure the remote players avatars as well.
                     ConfigureAvatarsForPathState();
